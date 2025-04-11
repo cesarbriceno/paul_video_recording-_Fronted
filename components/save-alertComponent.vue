@@ -2,7 +2,7 @@
   <div class="save-alert">
     <div class="alert-box">
       <p>¿Deseas guardar los cambios?</p>
-      <button @click="$emit('button-click')">Aceptar</button>
+      <button @click="handleSave">Aceptar</button>
       <button @click="$emit('close')">Cancelar</button>
     </div>
   </div>
@@ -11,6 +11,12 @@
 <script>
 export default {
   name: "SaveAlertComponent",
+  methods: {
+    handleSave() {
+      this.$emit('button-click'); // Emitir evento de guardar
+      this.$emit('stop-recording'); // Emitir evento para detener la grabación
+    },
+  },
 };
 </script>
 
