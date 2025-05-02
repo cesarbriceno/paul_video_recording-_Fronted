@@ -1,9 +1,16 @@
 <template>
   <div class="save-alert">
     <div class="alert-box">
-      <p>¿Deseas guardar los cambios?</p>
-      <button @click="handleSave">Aceptar</button>
-      <button @click="$emit('close')">Cancelar</button>
+      <p>¿Qué deseas hacer con la grabación?</p>
+      <button @click="$emit('button-click')">Guardar</button>
+      <button 
+        @click="$emit('continue-recording')"
+        :class="{ disabled: !isContinueEnabled }"
+      >
+        Continuar
+      </button>
+    
+      <button @click="$emit('delete-recording')">Eliminar</button>
     </div>
   </div>
 </template>
@@ -11,10 +18,14 @@
 <script>
 export default {
   name: "SaveAlertComponent",
-  methods: {
-    handleSave() {
-      this.$emit('button-click'); // Emitir evento de guardar
-      this.$emit('stop-recording'); // Emitir evento para detener la grabación
+  props: {
+    isContinueEnabled: {
+      type: Boolean,
+      required: true,
+    },
+    isRecording: {
+      type: Boolean,
+      required: true,
     },
   },
 };
@@ -38,6 +49,20 @@ export default {
 .alert-box button:first-of-type {
   background-color: #28a745;
   color: white;
+}
+.alert-box button:nth-of-type(2) {
+  background-color: #ffc107;
+  color: white;
+}
+.alert-box button:nth-of-type(2).disabled {
+  background-color: #e0e0e0;
+  color: #a0a0a0;
+  cursor: not-allowed;
+}
+.alert-box button:nth-of-type(3).disabled {
+  background-color: #e0e0e0;
+  color: #a0a0a0;
+  cursor: not-allowed;
 }
 .alert-box button:last-of-type {
   background-color: #dc3545;
