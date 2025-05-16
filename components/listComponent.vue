@@ -33,9 +33,12 @@
             @stop-recording="stopRecording" 
             @continue-recording="continueRecording" 
             @delete-recording="deleteRecording" 
-            :is-continue-enabled="isRecording" 
+            @save-recording="saveRecording"
+            :is-continue-enabled="isRecording"
+            :is-recording="isRecording"
             class="floating-alert" 
-        />
+        ></save-alertComponent>
+
         <save-type-alertComponent 
             v-if="showSaveTypeAlert" 
             @close="showSaveTypeAlert = false" 
@@ -88,6 +91,8 @@ export default {
         SaveTypeAlertComponent, // Nuevo componente para elegir tipo de guardado
         ShareAlertComponent, // Nuevo componente para mostrar opciones de compartir
     },
+    emits: ['saveRecording', 'deleteRecording', 'navigateToNav'],
+
     data() {
         return {
             icons: [
@@ -99,6 +104,9 @@ export default {
                 "mdi-content-save", // Cambiar "mdi-folder" por "mdi-content-save"
                 "mdi-share-variant",
             ],
+            mediaRecorder: null,
+            recordedChunks: [],
+            videoUrl: null,
             activeIcons: [], // Índices de los íconos activos
             isExpanded: true, // Estado para expandir o contraer la lista
             showSaveAlert: false, // Estado para mostrar el componente save-alertComponent
@@ -113,9 +121,83 @@ export default {
             notificationMessage: null, // Mensaje de notificación
             showSaveTypeAlert: false, // Estado para mostrar el nuevo alert
             showShareAlert: false, // Estado para mostrar el alert de compartir
+            recordingSeconds: 0, // Añadido para evitar undefined
+            recordingInterval: null, // Añadido para evitar undefined
+            pendingStartRecording: false, // Nuevo: para reiniciar grabación si cambia el micro
         };
     },
     methods: {
+        async startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: this.isMicrophoneActive,
+                });
+
+                // Si el micrófono está activo y no hay audio en el stream, pedir audio del micro
+                if (this.isMicrophoneActive) {
+                    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // Mezclar audio del micro con el stream de pantalla
+                    const combinedStream = new MediaStream([
+                        ...stream.getVideoTracks(),
+                        ...audioStream.getAudioTracks(),
+                    ]);
+                    this.mediaRecorder = new MediaRecorder(combinedStream);
+                } else {
+                    this.mediaRecorder = new MediaRecorder(stream);
+                }
+
+                this.recordedChunks = [];
+                this.mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) {
+                        this.recordedChunks.push(e.data);
+                    }
+                };
+
+                this.mediaRecorder.onstop = () => {
+                    const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+                    this.videoUrl = URL.createObjectURL(blob);
+                    console.log("Video generado:", this.videoUrl);
+                };
+
+                this.mediaRecorder.start();
+                this.startRecordingTimer();
+            } catch (err) {
+                console.error("Error al iniciar la grabación:", err);
+            }
+        },
+
+        saveRecording() {
+            if (!this.videoUrl || typeof this.videoUrl !== 'string') {
+                this.notificationMessage = "No hay video para guardar.";
+                setTimeout(() => (this.notificationMessage = null), 3000);
+                return;
+            }
+            const a = document.createElement('a');
+            a.href = this.videoUrl;
+            a.download = 'grabacion.webm';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            this.showSaveAlert = false;
+            this.notificationMessage = "Grabación guardada.";
+            setTimeout(() => (this.notificationMessage = null), 3000);
+        },
+
+    pauseRecording() {
+      if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+        this.mediaRecorder.pause();
+        this.isPaused = true;
+      }
+    },
+
+    continueRecording() {
+      if (this.mediaRecorder && this.mediaRecorder.state === 'paused') {
+        this.mediaRecorder.resume();
+        this.isPaused = false;
+      }
+    },
+
         toggleExpand() {
             this.isExpanded = !this.isExpanded; // Alterna entre expandir y contraer
         },
@@ -123,13 +205,9 @@ export default {
             if (icon === "mdi-share-variant") {
                 this.showShareAlert = true; // Mostrar el alert de compartir
             } else if (icon === "mdi-record-circle") {
-                if (this.isRecording) return; // No permitir clic si ya está grabando
-                this.isRecording = !this.isRecording; // Alterna el estado de grabación
-                if (this.isRecording) {
-                    this.startRecordingTimer();
-                } else {
-                    this.stopRecordingTimer();
-                }
+              if (this.isRecording) return;
+                this.isRecording = true;
+                this.startRecording(); // Ya NO se llama a startRecordingTimer aquí
             } else if (icon === "mdi-pause-circle") {
                 if (!this.isRecording) return; // No permitir pausar si no está grabando
                 this.isPaused = true; // Cambiar el estado a pausado
@@ -140,7 +218,7 @@ export default {
                 this.isPaused = false; // Cambiar el estado a no pausado
                 this.resumeRecordingTimer(); // Reanuda el contador
                 this.icons[index] = "mdi-pause-circle"; // Cambiar el ícono a pausa
-            } else if (icon === "mdi-microphone-off" || icon === "mdi-microphone") {
+            } else if (icon === "mdi-microphone-off" || icon === "mdi-microfono") {
                 // Alternar entre micrófono encendido y apagado
                 if (this.activeIcons.includes(index)) {
                     this.activeIcons = this.activeIcons.filter((i) => i !== index);
@@ -148,6 +226,11 @@ export default {
                 } else {
                     this.activeIcons.push(index);
                     this.isMicrophoneActive = true;
+                }
+                // Si está grabando, reiniciar la grabación para aplicar el cambio de micro
+                if (this.isRecording) {
+                    this.pendingStartRecording = true;
+                    this.stopRecording();
                 }
             } else if (icon === "mdi-stop-circle") {
                 this.showSaveAlert = true; // Muestra el componente save-alertComponent
@@ -191,8 +274,8 @@ export default {
         },
         getIconName(index, icon) {
             // Cambiar entre micrófono encendido y apagado
-            if (icon === "mdi-microphone-off" || icon === "mdi-microphone") {
-                return this.activeIcons.includes(index) ? "mdi-microphone" : "mdi-microphone-off";
+            if (icon === "mdi-microfono-off" || icon === "mdi-microfono") {
+                return this.activeIcons.includes(index) ? "mdi-microfono" : "mdi-microfono-off";
             }
             return icon;
         },
@@ -201,15 +284,29 @@ export default {
             this.$emit('navigate-to-nav'); // Emite un evento para mostrar el NavComponent expandido
         },
         stopRecording() {
-            this.isRecording = false; // Detener la grabación
-            this.isPaused = false; // Asegurarse de que no esté pausado
-            this.isCropping = false; // Desactivar el modo de recorte
-            this.stopRecordingTimer(); // Detener el contador
-            this.cropArea = null; // Reiniciar el área de recorte
-            this.cropStart = null; // Reiniciar las coordenadas iniciales del recorte
+            this.isRecording = false;
+            this.isPaused = false;
+            this.isCropping = false;
+            this.stopRecordingTimer();
+            this.cropArea = null;
+            this.cropStart = null;
+
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                this.mediaRecorder.stop();
+            }
+
             this.activeIcons = this.activeIcons.filter(
                 (index) => this.icons[index] !== "mdi-record-circle"
-            ); // Desactivar el ícono de grabación
+            );
+
+            // Si se cambió el micro durante la grabación, reiniciar grabación automáticamente
+            if (this.pendingStartRecording) {
+                this.pendingStartRecording = false;
+                setTimeout(() => {
+                    this.isRecording = true;
+                    this.startRecording();
+                }, 300); // Pequeño delay para liberar recursos
+            }
         },
         startCrop(event) {
             if (!this.isCropping) return;

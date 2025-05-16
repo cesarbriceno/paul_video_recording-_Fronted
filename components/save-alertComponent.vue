@@ -2,7 +2,7 @@
   <div class="save-alert">
     <div class="alert-box">
       <p>¿Qué deseas hacer con la grabación?</p>
-      <button @click="$emit('button-click')">Guardar</button>
+      <button @click="$emit('save-recording')">Guardar</button>
       <button 
         @click="$emit('continue-recording')"
         :class="{ disabled: !isContinueEnabled }"
