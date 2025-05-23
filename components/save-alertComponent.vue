@@ -1,17 +1,15 @@
 <template>
-  <div class="save-alert">
-    <div class="alert-box">
-      <p>¿Qué deseas hacer con la grabación?</p>
-      <button @click="$emit('save-recording')">Guardar</button>
-      <button 
-        @click="$emit('continue-recording')"
-        :class="{ disabled: !isContinueEnabled }"
-      >
-        Continuar
-      </button>
-    
-      <button @click="$emit('delete-recording')">Eliminar</button>
-    </div>
+  <div class="floating-alert">
+    <p>¿Qué deseas hacer con la grabación?</p>
+    <button @click="$emit('save-recording')">Guardar</button>
+    <button 
+      @click="$emit('continue-recording')"
+      :class="{ disabled: !isContinueEnabled }"
+      :disabled="!isContinueEnabled"
+    >
+      Continuar
+    </button>
+    <button @click="$emit('delete-recording')">Eliminar</button>
   </div>
 </template>
 
@@ -32,40 +30,11 @@ export default {
 </script>
 
 <style scoped>
-.alert-box {
-  background-color: #f8f9fa;
-  border: 1px solid #dee2e6;
-  padding: 16px;
-  border-radius: 8px;
-  text-align: center;
-}
-.alert-box button {
-  margin: 8px;
-  padding: 8px 16px;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.alert-box button:first-of-type {
-  background-color: #28a745;
-  color: white;
-}
-.alert-box button:nth-of-type(2) {
-  background-color: #ffc107;
-  color: white;
-}
-.alert-box button:nth-of-type(2).disabled {
-  background-color: #e0e0e0;
-  color: #a0a0a0;
-  cursor: not-allowed;
-}
-.alert-box button:nth-of-type(3).disabled {
-  background-color: #e0e0e0;
-  color: #a0a0a0;
-  cursor: not-allowed;
-}
-.alert-box button:last-of-type {
-  background-color: #dc3545;
-  color: white;
+/* El estilo principal ahora lo hereda de .floating-alert del listComponent.vue */
+.floating-alert button.disabled {
+  background: #e0e0e0 !important;
+  color: #a0a0a0 !important;
+  cursor: not-allowed !important;
+  border: none !important;
 }
 </style>
