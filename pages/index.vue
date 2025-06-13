@@ -1,4 +1,4 @@
-```vue
+
 <!-- pages/index.vue -->
 <template>
   <div>

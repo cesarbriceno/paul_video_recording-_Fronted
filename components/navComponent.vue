@@ -105,7 +105,7 @@ export default {
 /* Estilo del contenedor principal del sidebar */
 .sidebar {
     width: 250px;
-    height: 100vh;
+    height: 90vh;
     background-color: #f4f4f4;
     display: flex;
     flex-direction: column;

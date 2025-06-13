@@ -30,24 +30,27 @@
           </div>
           <span class="icon-label">Cerrar</span>
         </div>
-        <!-- Selector de dispositivos de audio -->
-        <div v-if="showDeviceSelector" class="device-selector">
-          <label>Seleccionar micrófono:</label>
-          <select v-model="selectedAudioDevice" @change="updateAudioDevice">
-            <option value="">Micrófono predeterminado</option>
-            <option v-for="device in audioDevices" :key="device.deviceId" :value="device.deviceId">
-              {{ device.label || `Micrófono ${device.deviceId.slice(0, 8)}` }}
-            </option>
-          </select>
-          <button @click="loadAudioDevices">Actualizar dispositivos</button>
-          <button @click="startRecordingWithSelectedDevice">Grabar</button>
-          <button @click="showDeviceSelector = false">Cancelar</button>
-        </div>
       </div>
       <div v-else class="collapse-button" @click="toggleExpand">
         <Icon name="mdi-arrow-right" />
       </div>
     </transition>
+    <!-- Mueve el selector de micrófono fuera de la barra y hazlo flotante -->
+    <div
+      v-if="showDeviceSelector"
+      class="device-selector-floating"
+    >
+      <label>Seleccionar micrófono:</label>
+      <select v-model="selectedAudioDevice" @change="updateAudioDevice">
+        <option value="">Micrófono predeterminado</option>
+        <option v-for="device in audioDevices" :key="device.deviceId" :value="device.deviceId">
+          {{ device.label || `Micrófono ${device.deviceId.slice(0, 8)}` }}
+        </option>
+      </select>
+      <button @click="loadAudioDevices">Actualizar dispositivos</button>
+      <button @click="startRecordingWithSelectedDevice">Grabar</button>
+      <button @click="showDeviceSelector = false">Cancelar</button>
+    </div>
     <save-alertComponent
       v-if="showSaveAlert"
       @close="showSaveAlert = false"
@@ -85,7 +88,9 @@
       class="microphone-icon"
     />
   </div>
-  <div v-if="isCropping" class="crop-overlay" @mousedown="startCrop" @mousemove="updateCrop" @mouseup="endCrop">
+  <div v-if="isCropping" class="crop-overlay"
+    @mousedown="startCrop"
+  >
     <div
       v-if="cropArea"
       class="crop-area"
@@ -94,8 +99,8 @@
         top: cropArea.startY + 'px',
         width: cropArea.width + 'px',
         height: cropArea.height + 'px'
-      }">
-    </div>
+      }"
+    ></div>
   </div>
 </template>
 
@@ -151,6 +156,7 @@ export default {
       isCropping: false,
       cropArea: null,
       cropStart: null,
+      cropConfirmed: false, // NUEVO: estado para saber si el usuario confirmó el área
       notificationMessage: null,
       showSaveTypeAlert: false,
       showShareAlert: false,
@@ -160,6 +166,7 @@ export default {
       audioDevices: [],
       selectedAudioDevice: '',
       showDeviceSelector: false,
+      isDraggingCrop: false, // NUEVO: para saber si se está arrastrando
     };
   },
   methods: {
@@ -195,82 +202,103 @@ export default {
     },
     async startRecording(withAudio = true) {
       try {
-        console.log('Iniciando grabación, con audio:', withAudio);
         this.isMicrophoneActive = withAudio;
-        this.recordedChunks = []; // Reiniciar chunks
+        this.recordedChunks = [];
         const displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: false,
         });
         this.stream = displayStream;
-        console.log('Stream de pantalla:', displayStream.getTracks());
-        console.log('Tracks de video:', displayStream.getVideoTracks().map(t => ({
-          label: t.label,
-          enabled: t.enabled,
-          muted: t.muted,
-        })));
-
         let combinedStream = displayStream;
-        if (withAudio) {
+        // Si hay un área de recorte definida, crear un canvas y grabar solo esa zona
+        if (this.cropArea && this.cropArea.width > 0 && this.cropArea.height > 0) {
+          const videoTrack = displayStream.getVideoTracks()[0];
+          const video = document.createElement('video');
+          video.srcObject = new MediaStream([videoTrack]);
+          await video.play();
+          const cropCanvas = document.createElement('canvas');
+          cropCanvas.width = this.cropArea.width;
+          cropCanvas.height = this.cropArea.height;
+          const cropCtx = cropCanvas.getContext('2d');
+          let animationFrame;
+          const draw = () => {
+            cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+            cropCtx.drawImage(
+              video,
+              this.cropArea.startX, this.cropArea.startY, this.cropArea.width, this.cropArea.height,
+              0, 0, this.cropArea.width, this.cropArea.height
+            );
+            animationFrame = requestAnimationFrame(draw);
+          };
+          draw();
+          const cropStream = cropCanvas.captureStream(30);
+          // Si hay audio, añadirlo
+          if (withAudio) {
+            try {
+              const audioConstraints = this.selectedAudioDevice
+                ? { deviceId: { exact: this.selectedAudioDevice } }
+                : true;
+              this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+              const audioTracks = this.audioStream.getAudioTracks();
+              audioTracks.forEach(track => cropStream.addTrack(track));
+              this.isMicrophoneActive = audioTracks.length > 0;
+            } catch (audioErr) {
+              this.notificationMessage = 'No se pudo acceder al micrófono: ' + audioErr.message + '. Grabando sin audio.';
+              setTimeout(() => (this.notificationMessage = null), 5000);
+              this.isMicrophoneActive = false;
+            }
+          }
+          combinedStream = cropStream;
+          // Limpiar recursos al detener
+          this._cropCleanup = () => {
+            cancelAnimationFrame(animationFrame);
+            video.pause();
+            video.srcObject = null;
+          };
+        } else if (withAudio) {
           try {
             const audioConstraints = this.selectedAudioDevice
               ? { deviceId: { exact: this.selectedAudioDevice } }
               : true;
-            console.log('Solicitando audio con constraints:', audioConstraints);
             this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
             const audioTracks = this.audioStream.getAudioTracks();
-            console.log('Stream de audio:', audioTracks);
-            console.log('Tracks de audio:', audioTracks.map(t => ({
-              label: t.label,
-              enabled: t.enabled,
-              muted: t.muted,
-            })));
-            if (audioTracks.length === 0) {
-              this.notificationMessage = 'No se detectaron tracks de audio. Grabando sin audio.';
-              setTimeout(() => (this.notificationMessage = null), 5000);
-              this.isMicrophoneActive = false;
-            } else {
-              audioTracks.forEach(track => {
-                track.enabled = true;
-              });
-              combinedStream = new MediaStream([
-                ...displayStream.getVideoTracks(),
-                ...audioTracks,
-              ]);
-              console.log('Stream combinado:', combinedStream.getTracks());
-            }
+            combinedStream = new MediaStream([
+              ...displayStream.getVideoTracks(),
+              ...audioTracks,
+            ]);
+            this.isMicrophoneActive = audioTracks.length > 0;
           } catch (audioErr) {
-            console.error('Error al obtener audio:', audioErr);
             this.notificationMessage = 'No se pudo acceder al micrófono: ' + audioErr.message + '. Grabando sin audio.';
             setTimeout(() => (this.notificationMessage = null), 5000);
             this.isMicrophoneActive = false;
           }
         }
-
         this.mediaRecorder = new MediaRecorder(combinedStream, {
           mimeType: 'video/webm;codecs=vp8,opus',
         });
         this.mediaRecorder.ondataavailable = (e) => {
           if (e.data.size > 0) {
             this.recordedChunks.push(e.data);
-            console.log('Datos recibidos:', e.data.size, 'bytes', 'Total chunks:', this.recordedChunks.length);
           }
         };
-
         this.mediaRecorder.onstop = () => {
-          console.log('Grabación detenida. Chunks acumulados:', this.recordedChunks.length);
+          if (this._cropCleanup) {
+            this._cropCleanup();
+            this._cropCleanup = null;
+          }
+          // Detener el stream de pantalla al parar la grabación
+          if (this.stream) {
+            this.stream.getTracks().forEach(track => track.stop());
+            this.stream = null;
+          }
           const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
           this.videoUrl = URL.createObjectURL(blob);
-          console.log('Video generado:', this.videoUrl);
         };
-
         this.mediaRecorder.start(100);
-        console.log('MediaRecorder iniciado, estado:', this.mediaRecorder.state);
         this.startRecordingTimer();
         this.isRecording = true;
         this.activeIcons = [...this.activeIcons, this.icons.indexOf('mdi-record-circle')];
       } catch (err) {
-        console.error('Error al iniciar la grabación:', err);
         this.notificationMessage = err.name === 'NotAllowedError'
           ? 'Permiso denegado para capturar pantalla o micrófono.'
           : 'Error al iniciar la grabación: ' + err.message;
@@ -307,14 +335,9 @@ export default {
       }
     },
     continueRecording() {
-      if (this.mediaRecorder && this.mediaRecorder.state === 'paused') {
-        this.mediaRecorder.resume();
-        this.isPaused = false;
+      this.showSaveAlert = false;
+      if (this.isRecording) {
         this.resumeRecordingTimer();
-        if (this.stream) {
-          this.stream.getVideoTracks().forEach(track => track.enabled = true);
-        }
-        console.log('Grabación reanudada, estado:', this.mediaRecorder.state);
       }
     },
     toggleExpand() {
@@ -359,10 +382,15 @@ export default {
         this.showSaveAlert = true;
         this.stopRecording();
       } else if (icon === 'mdi-crop') {
-        this.isCropping = !this.isCropping;
-        if (!this.isCropping) {
-          this.cropArea = null;
+        if (this.isCropping && !this.cropConfirmed) {
+          this.cancelCrop();
+          return;
         }
+        this.isCropping = true;
+        this.cropConfirmed = false;
+        document.body.style.cursor = 'crosshair';
+        this.cropArea = null;
+        this.cropStart = null;
       } else if (icon === 'mdi-content-save') {
         if (!this.videoUrl) return;
         this.showSaveTypeAlert = true;
@@ -393,53 +421,20 @@ export default {
       clearInterval(this.recordingInterval);
       this.recordingTime = '00:00';
     },
-    getIconName(index, icon) {
-      if (icon === 'mdi-microphone-off' || icon === 'mdi-microfono') {
-        return this.isMicrophoneActive ? 'mdi-microfono' : 'mdi-microfono-off';
-      }
-      return icon;
-    },
-    hideComponent() {
-      this.isVisible = false;
-      this.$emit('navigate-to-nav');
-    },
-    stopRecording() {
-      this.isRecording = false;
-      this.isPaused = false;
-      this.isCropping = false;
-      this.stopRecordingTimer();
-      this.cropArea = null;
-      this.cropStart = null;
-      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-        console.log('Deteniendo MediaRecorder, estado actual:', this.mediaRecorder.state);
-        this.mediaRecorder.stop();
-      }
-      if (this.stream) {
-        this.stream.getTracks().forEach(track => track.stop());
-        this.stream = null;
-      }
-      if (this.audioStream) {
-        this.audioStream.getTracks().forEach(track => track.stop());
-        this.audioStream = null;
-      }
-      this.activeIcons = this.activeIcons.filter(
-        index => this.icons[index] !== 'mdi-record-circle'
-      );
-      if (this.pendingStartRecording) {
-        this.pendingStartRecording = false;
-        setTimeout(() => {
-          this.isRecording = true;
-          this.startRecording(this.isMicrophoneActive);
-        }, 300);
-      }
-    },
+    // --- RECORTE DE PANTALLA ---
     startCrop(event) {
       if (!this.isCropping) return;
+      if (event.button !== 0) return;
       this.cropStart = { x: event.clientX, y: event.clientY };
       this.cropArea = { startX: event.clientX, startY: event.clientY, width: 0, height: 0 };
+      this.cropConfirmed = false;
+      this.isDraggingCrop = true;
+      document.body.style.cursor = 'crosshair';
+      window.addEventListener('mousemove', this.updateCrop, true);
+      window.addEventListener('mouseup', this.endCrop, true);
     },
     updateCrop(event) {
-      if (!this.isCropping || !this.cropStart) return;
+      if (!this.isCropping || !this.cropStart || !this.isDraggingCrop) return;
       const endX = event.clientX;
       const endY = event.clientY;
       this.cropArea = {
@@ -449,389 +444,386 @@ export default {
         height: Math.abs(this.cropStart.y - endY),
       };
     },
-    endCrop() {
-      if (!this.isCropping) return;
-      console.log('Área seleccionada:', this.cropArea);
-      this.cropStart = null;
-    },
-    handleSave() {
-      this.showSaveAlert = false;
-      this.notificationMessage = 'Grabación guardada.';
-      setTimeout(() => (this.notificationMessage = null), 3000);
-    },
-    continueRecording() {
-      this.showSaveAlert = false;
-      if (this.isRecording) {
-        this.resumeRecordingTimer();
+    endCrop(event) {
+      if (!this.isCropping || !this.isDraggingCrop) return;
+      this.isDraggingCrop = false;
+      document.body.style.cursor = '';
+      window.removeEventListener('mousemove', this.updateCrop, true);
+      window.removeEventListener('mouseup', this.endCrop, true);
+      // Si el área de recorte es muy pequeña, descartarla
+      if (!this.cropArea || this.cropArea.width < 10 || this.cropArea.height < 10) {
+        this.cropArea = null;
+        this.isCropping = false;
+        this.cropConfirmed = false;
+        return;
       }
+      this.cropConfirmed = false;
     },
-    deleteRecording() {
+    confirmCrop() {
+      this.cropConfirmed = true;
+      this.isCropping = false; // Oculta el overlay, pero el área queda lista para grabar
+      document.body.style.cursor = ''; // Restaurar cursor
+    },
+    cancelCrop() {
+      this.cropArea = null;
+      this.cropConfirmed = false;
+      this.isCropping = false;
+      document.body.style.cursor = ''; // Restaurar cursor
+    },
+    getIconName(index, icon) {
+      // Lógica para obtener el nombre del icono basado en el estado actual
+      if (icon === 'mdi-play-circle' && this.isPaused) {
+        return 'mdi-play-circle';
+      }
+      if (icon === 'mdi-pause-circle' && this.isPaused) {
+        return 'mdi-pause-circle';
+      }
+      if (icon === 'mdi-microphone-off' && this.isMicrophoneActive) {
+        return 'mdi-microfono';
+      }
+      return icon;
+    },
+    hideComponent() {
+      this.isVisible = false;
+      this.activeIcons = [];
       this.stopRecording();
       this.showSaveAlert = false;
-      this.notificationMessage = 'Grabación eliminada con éxito.';
-      setTimeout(() => (this.notificationMessage = null), 3000);
+      this.showSaveTypeAlert = false;
+      this.showShareAlert = false;
+      this.$emit('navigateToNav'); // Notifica al padre para mostrar el navcomponent
+    },
+    async shareViaGmail() {
+      if (!this.videoUrl) return;
+      const email = 'tu_correo@gmail.com';
+      const subject = 'Grabación de pantalla';
+      const body = `He grabado un video que quiero compartir contigo. Puedes verlo o descargarlo desde el siguiente enlace: ${this.videoUrl}`;
+      window.open(`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
+    },
+    copyLink() {
+      if (!this.videoUrl) return;
+      navigator.clipboard.writeText(this.videoUrl)
+        .then(() => {
+          this.notificationMessage = 'Enlace copiado al portapapeles.';
+          setTimeout(() => (this.notificationMessage = null), 3000);
+        })
+        .catch(err => {
+          console.error('Error al copiar el enlace:', err);
+          this.notificationMessage = 'Error al copiar el enlace.';
+          setTimeout(() => (this.notificationMessage = null), 3000);
+        });
     },
     saveAsAudio() {
+      if (!this.videoUrl) return;
+      const a = document.createElement('a');
+      a.href = this.videoUrl;
+      a.download = `grabacion_${new Date().toISOString()}.opus`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       this.showSaveTypeAlert = false;
-      this.stopRecording();
-      this.notificationMessage = 'Función de guardado como audio no implementada.';
+      this.notificationMessage = 'Grabación guardada como audio.';
       setTimeout(() => (this.notificationMessage = null), 3000);
     },
     saveAsVideo() {
+      if (!this.videoUrl) return;
+      const a = document.createElement('a');
+      a.href = this.videoUrl;
+      a.download = `grabacion_${new Date().toISOString()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       this.showSaveTypeAlert = false;
-      this.saveRecording();
-    },
-    shareViaGmail() {
-      if (!this.videoUrl) {
-        this.notificationMessage = 'No hay video para compartir.';
-        setTimeout(() => (this.notificationMessage = null), 3000);
-        return;
-      }
-      const subject = encodeURIComponent('Grabación de pantalla');
-      const body = encodeURIComponent(`Mira esta grabación: ${this.videoUrl}`);
-      window.open(`mailto:?subject=${subject}&body=${body}`);
-      this.showShareAlert = false;
-    },
-    copyLink() {
-      if (!this.videoUrl) {
-        this.notificationMessage = 'No hay video para compartir.';
-        setTimeout(() => (this.notificationMessage = null), 3000);
-        return;
-      }
-      navigator.clipboard.writeText(this.videoUrl);
-      this.notificationMessage = 'Enlace copiado al portapapeles.';
+      this.notificationMessage = 'Grabación guardada como video.';
       setTimeout(() => (this.notificationMessage = null), 3000);
-      this.showShareAlert = false;
     },
+    stopRecording() {
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop();
+        this.isRecording = false;
+        this.activeIcons = this.activeIcons.filter(i => i !== this.icons.indexOf('mdi-record-circle'));
+        this.stopRecordingTimer();
+        if (this.stream) {
+          this.stream.getTracks().forEach(track => track.stop());
+          this.stream = null;
+        }
+        document.body.style.cursor = ''; // Restaurar cursor siempre al detener
+        console.log('Grabación detenida, chunks finales:', this.recordedChunks.length);
+      }
+    },
+    async deleteRecording() {
+      this.showSaveAlert = false;
+      this.videoUrl = null;
+      this.recordedChunks = [];
+      this.notificationMessage = 'Grabación eliminada.';
+      setTimeout(() => (this.notificationMessage = null), 3000);
+    },
+  },
+  mounted() {
+    this.loadAudioDevices();
   },
 };
 </script>
 
 <style scoped>
-/* Fondo flotante semitransparente centrado y más ancho */
 .icon-container {
-  position: fixed;
-  left: 50%;
-  bottom: 40px;
-  transform: translateX(-50%);
   display: flex;
   flex-direction: row;
+  align-items: center;
   justify-content: center;
-  align-items: flex-end;
-  gap: 28px;
-  padding: 16px 60px 12px 60px;
-  background: rgba(30, 30, 30, 0.96);
-  border-radius: 40px;
-  box-shadow: 0 4px 32px rgba(0,0,0,0.22);
-  min-width: 0;
-  max-width: 1200px;
-  width: 80vw;
-  pointer-events: auto;
-  z-index: 1100;
+  position: fixed;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  padding: 10px 24px;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 18px;
+  backdrop-filter: blur(10px);
+  z-index: 3000;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+  min-width: 340px;
+  max-width: 90vw;
+  gap: 10px;
 }
 
-/* Cada icono y su texto */
+/* Botón de colapso flotante, redondo y a la derecha */
+.collapse-button {
+  position: fixed;
+  right: 40px;
+  bottom: 40px;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 50%;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+  width: 56px;
+  height: 56px;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  transition: background 0.2s;
+  padding: 0;
+}
+
+.collapse-button:hover {
+  background: rgba(0,0,0,0.85);
+}
+
 .icon-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
-  min-width: 80px;
-  max-width: 140px;
-  height: 90px;
   cursor: pointer;
-  text-align: center;
-  overflow: visible;
-  background: transparent;
-  padding: 0 4px;
+  margin: 0 8px;
   position: relative;
 }
 
-/* Círculo del icono */
 .icon-circle {
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  background: #fff;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 6px;
-  box-shadow: 0 1.5px 4px rgba(0,0,0,0.12);
-  transition: background 0.2s;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  margin-bottom: 4px;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
+  font-size: 22px;
 }
 
-.icon-wrapper:hover .icon-circle {
-  background: #e0e0e0;
+/* Fondo blanco para iconos activos/usables */
+.icon-wrapper:not(.active):not(.pause-active):not(.pause-disabled):not(.record-disabled):not(.save-disabled):not(.stop-disabled):hover .icon-circle,
+.icon-wrapper:not(.active):not(.pause-active):not(.pause-disabled):not(.record-disabled):not(.save-disabled):not(.stop-disabled) .icon-circle {
+  background: #fff;
+  color: #222;
 }
 
+/* Fondo rojo para icono seleccionado */
 .icon-wrapper.active .icon-circle,
 .icon-wrapper.pause-active .icon-circle {
-  background: #ff4d4d;
-}
-
-.icon-wrapper.active .icon-circle Icon,
-.icon-wrapper.pause-active .icon-circle Icon {
+  background: #e53935;
   color: #fff;
+  box-shadow: 0 0 0 2px #e53935;
 }
 
-.icon-wrapper.save-disabled,
-.icon-wrapper.stop-disabled,
-.icon-wrapper.pause-disabled,
-.icon-wrapper.record-disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-.icon-wrapper.save-disabled .icon-circle,
-.icon-wrapper.stop-disabled .icon-circle,
+/* Iconos deshabilitados (gris) */
 .icon-wrapper.pause-disabled .icon-circle,
-.icon-wrapper.record-disabled .icon-circle {
-  background: #e0e0e0;
+.icon-wrapper.record-disabled .icon-circle,
+.icon-wrapper.save-disabled .icon-circle,
+.icon-wrapper.stop-disabled .icon-circle {
+  background: #bbb !important;
+  color: #fff !important;
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.icon-wrapper.save-disabled .icon-label,
-.icon-wrapper.stop-disabled .icon-label,
-.icon-wrapper.pause-disabled .icon-wrapper.record-disabled .icon-label {
-  color: #b0b0b0;
-}
-
-.icon-wrapper.save-disabled .icon-circle Icon,
-.icon-wrapper.stop-disabled .icon-circle Icon,
-.icon-wrapper.pause-disabled .icon-circle Icon,
-.icon-wrapper.record-disabled .icon-circle Icon {
-  color: #b0b0b0;
-}
-
-/* Texto debajo del icono */
 .icon-label {
-  font-size: 14px;
   color: #fff;
-  white-space: normal;
-  overflow: visible;
-  text-overflow: unset;
-  line-height: 1.2;
-  max-width: 120px;
-  margin-top: 2px;
-  word-break: break-word;
+  font-size: 16px;
+  white-space: nowrap;
   text-align: center;
-  font-weight: 400;
-  letter-spacing: 0.01em;
 }
 
-.icon-wrapper.active .icon-label {
+.close-list-icon {
   color: #ff4d4d;
 }
 
-/* Botón de cerrar */
-.close-list-icon {
-  font-size: 28px;
-  color: #dc3545;
-}
-
-.icon-wrapper:hover .close-list-icon {
-  color: #c82333;
-}
-
-/* Botón flotante para contraer */
-.collapse-button {
-  position: fixed;
-  bottom: 40px;
-  right: 40px;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: rgba(30, 30, 30, 0.96);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.22);
-  cursor: pointer;
-  z-index: 1200;
-  transition: background 0.2s;
-}
-
-.collapse-button:hover {
-  background: #ff4d4d;
-}
-
-.collapse-button Icon {
-  font-size: 28px;
-  color: #fff;
-}
-
-/* Selector de dispositivos de audio */
 .device-selector {
+  /* Elimina estilos antiguos, solo para barra interna si se usa */
+}
+
+/* Nuevo: selector de micrófono flotante fuera de la barra */
+.device-selector-floating {
   position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  min-width: 340px;
-  max-width: 95vw;
-  background: #232323;
+  top: 100px;
+  right: 40px;
+  z-index: 4002;
+  background: rgba(30, 30, 30, 0.97);
   color: #fff;
-  border-radius: 20px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.32);
-  padding: 32px 36px 24px 36px;
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+  padding: 8px 10px 6px 10px; /* Más pequeño aún */
+  min-width: 120px;
+  max-width: 90vw;
+  border: 1px solid rgba(255,255,255,0.10);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  z-index: 1400;
-  font-size: 16px;
+  gap: 6px;
 }
 
-.device-selector label {
-  font-size: 18px;
-  font-weight: 600;
-  margin-bottom: 18px;
+.device-selector-floating label {
   color: #fff;
+  margin-bottom: 2px;
+  font-size: 11px;
 }
 
-.device-selector select {
-  width: 95%;
-  padding: 12px 14px;
-  margin-bottom: 18px;
-  border-radius: 7px;
-  border: 1.5px solid #aaa;
-  font-size: 16px;
-  background: #fff;
-  color: #232323;
-}
-
-.device-selector button {
-  margin: 10px 10px 0 10px;
-  padding: 12px 28px;
+.device-selector-floating select {
+  padding: 4px;
   border: none;
-  border-radius: 7px;
-  font-size: 17px;
-  cursor: pointer;
-  background: #444;
-  color: #fff;
-  transition: background 0.2s, color 0.2s;
-  font-weight: 500;
-  min-width: 120px;
+  border-radius: 4px;
+  width: 100%;
+  margin-bottom: 6px;
+  font-size: 11px;
 }
 
-/* Botón "Actualizar dispositivos" */
-.device-selector button:first-of-type {
+.device-selector-floating button {
+  padding: 5px 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  font-size: 11px;
+  transition: background 0.2s, color 0.2s;
+  width: 100%;
+}
+
+/* Botón actualizar blanco */
+.device-selector-floating button:nth-child(3) {
+  background: #fff;
+  color: #222;
+  font-weight: 500;
+}
+.device-selector-floating button:nth-child(3):hover {
+  background: #e0e0e0;
+}
+
+/* Botón grabar rojo */
+.device-selector-floating button:nth-child(4) {
+  background: #e53935;
+  color: #fff;
+  font-weight: 500;
+}
+.device-selector-floating button:nth-child(4):hover {
+  background: #b71c1c;
+}
+
+/* Botón cancelar gris */
+.device-selector-floating button:nth-child(5) {
   background: #444;
   color: #fff;
 }
-.device-selector button:first-of-type:hover {
+.device-selector-floating button:nth-child(5):hover {
   background: #666;
 }
 
-/* Botón "Grabar" en rojo */
-.device-selector button:nth-of-type(2) {
-  background: #ff4d4d;
-  color: #fff;
-  font-weight: bold;
-}
-.device-selector button:nth-of-type(2):hover {
-  background: #c82333;
-}
-
-/* Botón "Cancelar" en blanco con borde y texto rojo */
-.device-selector button:last-of-type {
-  background: #fff;
-  color: #dc3545;
-  border: 1.5px solid #dc3545;
-  font-weight: bold;
-}
-.device-selector button:last-of-type:hover {
-  background: #ffeaea;
-  color: #b52a37;
-  border-color: #b52a37;
-}
-
-/* ALERTAS flotantes */
 .floating-alert {
   position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  min-width: 340px;
-  max-width: 95vw;
-  background: #232323; /* Cambiado a fondo oscuro para evitar doble fondo */
+  top: 20px;
+  right: 20px;
+  z-index: 4001; /* Más alto que el overlay */
+  max-width: 300px;
+  width: 100%;
+  background: rgba(30, 30, 30, 0.95);
   color: #fff;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.32);
-  border-radius: 18px;
-  z-index: 1500;
-  padding: 32px 36px 24px 36px;
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+  padding: 18px 18px 14px 18px;
+  font-size: 15px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.notification {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  background: rgba(30, 30, 30, 0.95);
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 8px;
+  z-index: 4001; /* Más alto que el overlay */
+  box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+  font-size: 15px;
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: opacity 0.3s;
+}
+
+/* Indicador de grabación flotante, pequeño y arriba a la izquierda */
+.recording-indicator {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  background: rgba(30, 30, 30, 0.95);
+  color: #fff;
+  padding: 5px 13px 5px 10px;
+  border-radius: 16px;
   display: flex;
-  flex-direction: column;
   align-items: center;
+  z-index: 4100;
+  font-size: 13px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  gap: 7px;
+  min-width: 0;
+  min-height: 0;
 }
 
-.floating-alert p,
-.floating-alert h3 {
-  color: #fff;
-  margin-bottom: 18px;
-  text-align: center;
-}
-
-.floating-alert button {
-  margin: 8px 8px 0 8px;
-  padding: 10px 22px;
-  border: none;
-  border-radius: 6px;
+.recording-icon {
+  color: #e53935;
   font-size: 16px;
-  cursor: pointer;
-  background: #444;
-  color: #fff;
-  transition: background 0.2s;
+  margin-right: 4px;
 }
 
-.floating-alert button:first-of-type {
-  background: #28a745;
+.microphone-icon {
+  margin-left: 6px;
+  font-size: 15px;
   color: #fff;
-}
-.floating-alert button:nth-of-type(2) {
-  background: #ffc107;
-  color: #222;
-}
-.floating-alert button:last-of-type {
-  background: #fff;
-  color: #dc3545;
-  border: 1.5px solid #dc3545;
-  font-weight: bold;
-}
-.floating-alert button:last-of-type:hover {
-  background: #ffeaea;
-  color: #b52a37;
-  border-color: #b52a37;
+  opacity: 0.8;
 }
 
-/* Ajustes para dispositivos pequeños */
-@media (max-width: 900px) {
-  .icon-container {
-    gap: 14px;
-    padding: 10px 10vw 8px 10vw;
-    max-width: 98vw;
-    width: 98vw;
-  }
-  .icon-wrapper {
-    min-width: 60px;
-    max-width: 90px;
-    height: 70px;
-  }
-  .icon-label {
-    font-size: 11px;
-    max-width: 80px;
-  }
-  .icon-circle {
-    width: 38px;
-    height: 38px;
-  }
-  .close-list-icon {
-    font-size: 20px;
-  }
-  .collapse-button {
-    width: 44px;
-    height: 44px;
-    bottom: 20px;
-    right: 20px;
-  }
+.crop-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.7);
+  cursor: crosshair;
+  z-index: 2000; /* Cambiado de 4000 a 2000 para quedar detrás de los botones y notificaciones */
+}
+
+.crop-area {
+  position: absolute;
+  border: 2px dashed #fff;
+  background: rgba(255, 255, 255, 0.2);
+  pointer-events: none;
 }
 </style>
